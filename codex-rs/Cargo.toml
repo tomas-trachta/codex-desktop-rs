@@ -55,6 +55,7 @@ members = [
     "http-client",
     "secrets",
     "exec",
+    "gui",
     "file-system",
     "exec-server-protocol",
     "exec-server",
@@ -389,6 +390,7 @@ hmac = "0.12.1"
 http = "1.3.1"
 httpdate = "1.0.3"
 iana-time-zone = "0.1.64"
+iced = { version = "0.14", features = ["markdown"] }
 icu_decimal = "2.1"
 icu_locale_core = "2.1"
 icu_provider = { version = "2.1", features = ["sync"] }
