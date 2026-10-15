@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use codex_app_server_protocol::CommandAction;
 use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::FileUpdateChange;
 use codex_app_server_protocol::PatchApplyStatus;
@@ -10,22 +11,34 @@ use iced::widget::markdown;
 
 #[derive(Default)]
 pub struct Transcript {
-    entries: Vec<Entry>,
+    rows: Vec<Row>,
     positions: HashMap<String, usize>,
+}
+
+pub struct Row {
+    pub key: String,
+    pub entry: Entry,
 }
 
 pub enum Entry {
     User(String),
-    Agent(markdown::Content),
+    Agent(AgentEntry),
     Reasoning(String),
     Command(CommandEntry),
     FileChange(FileChangeEntry),
     ToolCall(String),
     Notice(String),
+    TurnSummary { duration_ms: i64 },
+}
+
+pub struct AgentEntry {
+    pub content: markdown::Content,
+    pub text: String,
 }
 
 pub struct CommandEntry {
     pub command: String,
+    pub actions: Vec<CommandAction>,
     pub output: String,
     pub status: CommandExecutionStatus,
     pub exit_code: Option<i32>,
@@ -45,8 +58,8 @@ impl Transcript {
         transcript
     }
 
-    pub fn entries(&self) -> &[Entry] {
-        &self.entries
+    pub fn rows(&self) -> &[Row] {
+        &self.rows
     }
 
     pub fn file_changes(&self, item_id: &str) -> Option<&[FileUpdateChange]> {
@@ -61,7 +74,17 @@ impl Transcript {
     }
 
     pub fn push_notice(&mut self, text: String) {
-        self.entries.push(Entry::Notice(text));
+        let key = format!("notice-{}", self.rows.len());
+        self.insert(key, Entry::Notice(text));
+    }
+
+    pub fn push_turn_summary(&mut self, turn_id: &str, duration_ms: Option<i64>) {
+        if let Some(duration_ms) = duration_ms {
+            self.insert(
+                format!("turn-{turn_id}"),
+                Entry::TurnSummary { duration_ms },
+            );
+        }
     }
 
     pub fn upsert(&mut self, item: &ThreadItem) {
@@ -74,15 +97,12 @@ impl Transcript {
     }
 
     pub fn append_agent_text(&mut self, item_id: &str, delta: &str) {
-        if let Some(Entry::Agent(content)) = self.entry_mut(item_id) {
-            content.push_str(delta);
+        if let Some(Entry::Agent(agent)) = self.entry_mut(item_id) {
+            agent.push_str(delta);
             return;
         }
 
-        self.insert(
-            item_id.to_string(),
-            Entry::Agent(markdown::Content::parse(delta)),
-        );
+        self.insert(item_id.to_string(), Entry::Agent(AgentEntry::parse(delta)));
     }
 
     pub fn append_reasoning(&mut self, item_id: &str, delta: &str) {
@@ -108,6 +128,8 @@ impl Transcript {
         if let Some(error) = &turn.error {
             self.push_notice(error.message.clone());
         }
+
+        self.push_turn_summary(&turn.id, turn.duration_ms);
     }
 
     fn adopt_client_message_id(&mut self, item: &ThreadItem) {
@@ -131,18 +153,18 @@ impl Transcript {
             return;
         }
 
-        self.positions.insert(key, self.entries.len());
-        self.entries.push(entry);
+        self.positions.insert(key.clone(), self.rows.len());
+        self.rows.push(Row { key, entry });
     }
 
     fn entry(&self, key: &str) -> Option<&Entry> {
         let position = *self.positions.get(key)?;
-        self.entries.get(position)
+        self.rows.get(position).map(|row| &row.entry)
     }
 
     fn entry_mut(&mut self, key: &str) -> Option<&mut Entry> {
         let position = *self.positions.get(key)?;
-        self.entries.get_mut(position)
+        self.rows.get_mut(position).map(|row| &mut row.entry)
     }
 }
 
@@ -150,18 +172,18 @@ impl Entry {
     fn from_item(item: &ThreadItem) -> Option<Self> {
         match item {
             ThreadItem::UserMessage { content, .. } => Some(Self::User(user_text(content))),
-            ThreadItem::AgentMessage { text, .. } => {
-                Some(Self::Agent(markdown::Content::parse(text)))
-            }
+            ThreadItem::AgentMessage { text, .. } => Some(Self::Agent(AgentEntry::parse(text))),
             ThreadItem::Reasoning { summary, .. } => Some(Self::Reasoning(summary.join("\n\n"))),
             ThreadItem::CommandExecution {
                 command,
+                command_actions,
                 aggregated_output,
                 status,
                 exit_code,
                 ..
             } => Some(Self::Command(CommandEntry {
                 command: command.clone(),
+                actions: command_actions.clone(),
                 output: aggregated_output.clone().unwrap_or_default(),
                 status: status.clone(),
                 exit_code: *exit_code,
@@ -177,6 +199,20 @@ impl Entry {
             }
             _ => None,
         }
+    }
+}
+
+impl AgentEntry {
+    fn parse(text: &str) -> Self {
+        Self {
+            content: markdown::Content::parse(text),
+            text: text.to_string(),
+        }
+    }
+
+    fn push_str(&mut self, delta: &str) {
+        self.content.push_str(delta);
+        self.text.push_str(delta);
     }
 }
 

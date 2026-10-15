@@ -1,52 +1,60 @@
+use iced::Alignment;
 use iced::Element;
 use iced::Font;
 use iced::Length;
 use iced::widget::button;
-use iced::widget::center;
 use iced::widget::column;
 use iced::widget::container;
-use iced::widget::opaque;
 use iced::widget::row;
 use iced::widget::space;
 use iced::widget::text;
 
+use super::icon;
+use super::icon::Icon;
 use super::style;
+use super::transcript::CONTENT_WIDTH;
 use super::transcript::changed_file;
 use crate::app::App;
 use crate::app::Message;
-use crate::approval::ApprovalSubject;
-use crate::approval::Decision;
-use crate::approval::PendingApproval;
-
-const DIALOG_WIDTH: f32 = 560.0;
+use codex_gui::approval::ApprovalSubject;
+use codex_gui::approval::Decision;
+use codex_gui::approval::PendingApproval;
 
 pub fn view<'a>(app: &'a App, pending: &'a PendingApproval) -> Element<'a, Message> {
-    let mut dialog = column![heading(app, pending)].spacing(14);
+    let mut card = column![heading(app, pending)].spacing(12);
 
     if let Some(reason) = &pending.reason {
-        dialog = dialog.push(text(reason).size(13).style(text::secondary));
+        card = card.push(text(reason).size(14).color(style::TEXT_MUTED));
     }
 
-    let dialog = dialog.push(details(app, pending)).push(actions());
-
-    let card = container(dialog)
-        .padding(20)
-        .max_width(DIALOG_WIDTH)
+    let card = container(card.push(details(app, pending)).push(actions()))
+        .padding([16, 18])
+        .width(Length::Fill)
         .style(style::dialog);
 
-    opaque(center(card).style(style::backdrop))
+    container(container(card).max_width(CONTENT_WIDTH))
+        .center_x(Length::Fill)
+        .padding([0, 32])
+        .into()
 }
 
 fn heading<'a>(app: &App, pending: &PendingApproval) -> Element<'a, Message> {
     let title = match pending.subject {
-        ApprovalSubject::Command { .. } => "Allow Codex to run this command?",
-        ApprovalSubject::FileChange { .. } => "Allow Codex to apply these changes?",
+        ApprovalSubject::Command { .. } => "Run this command?",
+        ApprovalSubject::FileChange { .. } => "Apply these changes?",
     };
 
-    let mut heading = row![text(title).size(17), space::horizontal()];
+    let mut heading = row![
+        icon::icon(Icon::Shield, 16.0, style::ACCENT),
+        text(title).size(15).font(style::SEMIBOLD),
+        space::horizontal(),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
     if app.approvals.len() > 1 {
         let queued = format!("{} pending", app.approvals.len());
-        heading = heading.push(text(queued).size(12).style(text::secondary));
+        heading = heading.push(text(queued).size(12).color(style::TEXT_MUTED));
     }
 
     heading.into()
@@ -64,9 +72,9 @@ fn details<'a>(app: &'a App, pending: &'a PendingApproval) -> Element<'a, Messag
     };
 
     container(body)
-        .padding(12)
+        .padding([10, 12])
         .width(Length::Fill)
-        .style(style::tool_card)
+        .style(style::code_block)
         .into()
 }
 
@@ -79,7 +87,7 @@ fn command_details<'a>(command: Option<&'a str>, cwd: Option<&'a str>) -> Elemen
     .spacing(6);
 
     if let Some(cwd) = cwd {
-        body = body.push(text(format!("in {cwd}")).size(12).style(text::secondary));
+        body = body.push(text(format!("in {cwd}")).size(12).color(style::TEXT_MUTED));
     }
 
     body.into()
@@ -106,7 +114,7 @@ fn file_change_details<'a>(
         body = body.push(
             text(format!("Grants write access to {root}"))
                 .size(12)
-                .style(text::secondary),
+                .color(style::TEXT_MUTED),
         );
     }
 
@@ -116,25 +124,45 @@ fn file_change_details<'a>(
 fn actions<'a>() -> Element<'a, Message> {
     row![
         space::horizontal(),
-        decision_button("Decline", Decision::Decline, button::secondary),
         decision_button(
-            "Allow for session",
+            "Always allow",
+            None,
             Decision::AcceptForSession,
-            button::secondary
+            style::secondary_button
         ),
-        decision_button("Allow once", Decision::Accept, button::primary),
+        decision_button(
+            "Decline",
+            Some("Esc"),
+            Decision::Decline,
+            style::secondary_button
+        ),
+        decision_button(
+            "Approve",
+            Some("⏎"),
+            Decision::Accept,
+            style::primary_button
+        ),
     ]
     .spacing(8)
+    .align_y(Alignment::Center)
     .into()
 }
 
 fn decision_button<'a>(
     label: &'a str,
+    hint: Option<&'a str>,
     decision: Decision,
     style: fn(&iced::Theme, button::Status) -> button::Style,
 ) -> Element<'a, Message> {
-    button(text(label).size(13))
-        .padding([8, 14])
+    let mut content = row![text(label).size(13)]
+        .spacing(8)
+        .align_y(Alignment::Center);
+    if let Some(hint) = hint {
+        content = content.push(text(hint).size(12).color(style::TEXT_FAINT));
+    }
+
+    button(content)
+        .padding([7, 14])
         .style(style)
         .on_press(Message::Decide(decision))
         .into()

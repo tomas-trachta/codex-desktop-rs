@@ -1,15 +1,10 @@
-// Release builds exceed rustc's default query depth when laying out the async
-// MessageProcessor::handle_initialized_client_request future.
-#![recursion_limit = "256"]
-
 mod app;
-mod approval;
-mod backend;
-mod launch;
+mod approval_modes;
+mod shortcuts;
 mod transcript;
 mod view;
 
-use launch::LaunchOptions;
+use codex_gui::launch::LaunchOptions;
 
 fn main() -> iced::Result {
     let arg0_guard = codex_arg0::arg0_dispatch();

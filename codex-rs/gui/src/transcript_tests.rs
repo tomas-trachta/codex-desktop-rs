@@ -32,9 +32,9 @@ fn agent_message(id: &str, text: &str) -> ThreadItem {
 
 fn user_texts(transcript: &Transcript) -> Vec<&str> {
     transcript
-        .entries()
+        .rows()
         .iter()
-        .filter_map(|entry| match entry {
+        .filter_map(|row| match &row.entry {
             Entry::User(text) => Some(text.as_str()),
             _ => None,
         })
@@ -71,9 +71,9 @@ fn streamed_agent_message_stays_a_single_entry() {
     transcript.append_agent_text("agent-1", "lo");
     transcript.upsert(&agent_message("agent-1", "Hello"));
 
-    assert_eq!(transcript.entries().len(), 1);
+    assert_eq!(transcript.rows().len(), 1);
     assert!(matches!(
-        transcript.entries().first(),
+        transcript.rows().first().map(|row| &row.entry),
         Some(Entry::Agent(_))
     ));
 }

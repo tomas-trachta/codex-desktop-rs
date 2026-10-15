@@ -1,10 +1,13 @@
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
+use std::path::Path;
 
+use codex_app_server_protocol::Project;
 use codex_app_server_protocol::Thread;
+use codex_app_server_protocol::ThreadStatus;
 use iced::Alignment;
 use iced::Element;
 use iced::Length;
+use iced::widget::Column;
+use iced::widget::Id;
 use iced::widget::button;
 use iced::widget::column;
 use iced::widget::container;
@@ -12,112 +15,274 @@ use iced::widget::row;
 use iced::widget::scrollable;
 use iced::widget::space;
 use iced::widget::text;
+use iced::widget::text::Wrapping;
+use iced::widget::text_input;
 
+use super::header_action;
+use super::icon;
+use super::icon::Icon;
 use super::style;
 use crate::app::App;
 use crate::app::Message;
+use crate::app::NewChatTarget;
+use crate::app::SEARCH_ID;
 use crate::app::thread_title;
 
-const SIDEBAR_WIDTH: f32 = 280.0;
-const MINUTE: i64 = 60;
-const HOUR: i64 = 60 * MINUTE;
-const DAY: i64 = 24 * HOUR;
+const SIDEBAR_WIDTH: f32 = 290.0;
+const THREADS_PER_PROJECT: usize = 5;
+const RECENT_THREADS: usize = 12;
+const TITLE_CHARACTERS: usize = 34;
+const THREAD_INDENT: f32 = 26.0;
+const RUNNING_DOT_SIZE: f32 = 7.0;
+
+struct ProjectGroup<'a> {
+    name: String,
+    cwd: &'a Path,
+    project_id: Option<&'a str>,
+    threads: Vec<&'a Thread>,
+}
 
 pub fn view(app: &App) -> Element<'_, Message> {
     let active_id = app.active.as_ref().map(|thread| thread.id.as_str());
-    let now = unix_now();
+    let threads = app.visible_threads();
 
-    let threads = column(
-        app.threads
-            .iter()
-            .map(|thread| thread_entry(thread, active_id == Some(thread.id.as_str()), now)),
+    let mut content = column![header(app)].spacing(4).padding([16, 12]);
+    if let Some(query) = &app.search {
+        content = content.push(search_box(query));
+    }
+
+    let content = content
+        .push(new_chat(app))
+        .push(projects_header())
+        .push(projects(app, &threads, active_id))
+        .push(section_label("Recents"))
+        .push(recents(&threads));
+
+    container(
+        scrollable(content)
+            .direction(style::thin_scrollbar())
+            .height(Length::Fill),
     )
-    .spacing(2);
+    .width(SIDEBAR_WIDTH)
+    .height(Length::Fill)
+    .style(style::sidebar)
+    .into()
+}
 
-    let content = column![
-        toolbar(app),
-        text("Threads").size(12).style(text::secondary),
-        scrollable(threads).height(Length::Fill),
+fn header(app: &App) -> Element<'_, Message> {
+    let refresh = button(icon::icon(Icon::Refresh, 16.0, style::TEXT_MUTED))
+        .padding(6)
+        .style(style::icon_button)
+        .on_press_maybe(app.is_ready().then_some(Message::RefreshThreads));
+
+    let title = text("Codex").size(19).font(style::SEMIBOLD);
+
+    let search = button(icon::icon(Icon::Search, 16.0, style::TEXT_MUTED))
+        .padding(6)
+        .style(style::icon_button)
+        .on_press(Message::ToggleSearch);
+
+    container(
+        row![title, space::horizontal(), search, refresh]
+            .spacing(2)
+            .align_y(Alignment::Center),
+    )
+    .padding(iced::Padding::ZERO.left(8))
+    .into()
+}
+
+fn search_box(query: &str) -> Element<'_, Message> {
+    container(
+        text_input("Search chats", query)
+            .id(Id::new(SEARCH_ID))
+            .on_input(Message::SearchEdited)
+            .size(14)
+            .padding([6, 10])
+            .style(style::inline_input),
+    )
+    .padding(iced::Padding::ZERO.top(8))
+    .into()
+}
+
+fn new_chat(app: &App) -> Element<'_, Message> {
+    let label = row![
+        icon::icon(Icon::NewChat, 16.0, style::TEXT),
+        text("New chat").size(14),
     ]
-    .spacing(12)
-    .padding(12);
+    .spacing(10)
+    .align_y(Alignment::Center);
 
-    container(content)
-        .width(SIDEBAR_WIDTH)
-        .height(Length::Fill)
-        .style(style::sidebar)
+    container(
+        button(label)
+            .width(Length::Fill)
+            .padding([7, 8])
+            .style(style::row_button(false))
+            .on_press_maybe(app.is_ready().then_some(Message::NewChat)),
+    )
+    .padding([10, 0])
+    .into()
+}
+
+fn section_label<'a>(label: &'a str) -> Element<'a, Message> {
+    container(text(label).size(13).color(style::TEXT_MUTED))
+        .padding([10, 8])
         .into()
 }
 
-fn toolbar(app: &App) -> Element<'_, Message> {
-    let ready = app.is_ready();
-
-    let new_thread = button(text("New thread").size(13))
-        .style(button::primary)
-        .on_press_maybe(ready.then_some(Message::NewThread));
-    let refresh = button(text("Refresh").size(13))
-        .style(button::text)
-        .on_press_maybe(ready.then_some(Message::RefreshThreads));
-
+fn projects_header<'a>() -> Element<'a, Message> {
     row![
-        text("Codex").size(20),
+        section_label("Projects"),
         space::horizontal(),
-        refresh,
-        new_thread
+        header_action(Icon::Plus, "Add project  Ctrl+O", Message::AddProject),
     ]
-    .spacing(6)
     .align_y(Alignment::Center)
     .into()
 }
 
-fn thread_entry(thread: &Thread, is_active: bool, now: i64) -> Element<'_, Message> {
-    let details = format!(
-        "{} · {}",
-        folder_name(thread),
-        relative_time(now - thread.updated_at)
-    );
+fn projects<'a>(
+    app: &'a App,
+    threads: &[&'a Thread],
+    active_id: Option<&str>,
+) -> Element<'a, Message> {
+    let mut list = Column::new().spacing(2);
+    let selected_cwd = app
+        .active
+        .is_none()
+        .then_some(app.new_chat_target.as_ref())
+        .flatten()
+        .map(|target| target.cwd.as_path());
 
-    let label = column![
-        text(thread_title(thread)).size(14),
-        text(details).size(11).style(text::secondary),
+    for project in project_groups(&app.projects, threads) {
+        let is_selected = selected_cwd == Some(project.cwd);
+        list = list.push(project_row(&project, is_selected));
+        for thread in project.threads {
+            let is_active = active_id == Some(thread.id.as_str());
+            list = list.push(
+                container(thread_row(thread, is_active))
+                    .padding(iced::Padding::ZERO.left(THREAD_INDENT)),
+            );
+        }
+    }
+
+    list.into()
+}
+
+fn recents<'a>(threads: &[&'a Thread]) -> Element<'a, Message> {
+    let rows = threads
+        .iter()
+        .take(RECENT_THREADS)
+        .map(|thread| thread_row(thread, false));
+
+    Column::with_children(rows).spacing(2).into()
+}
+
+fn project_row<'a>(project: &ProjectGroup<'_>, is_selected: bool) -> Element<'a, Message> {
+    let label = row![
+        icon::icon(Icon::Folder, 16.0, style::TEXT_MUTED),
+        text(project.name.clone()).size(14),
     ]
-    .spacing(2);
+    .spacing(10)
+    .align_y(Alignment::Center);
 
-    let style = if is_active {
-        button::secondary
-    } else {
-        button::text
+    let target = NewChatTarget {
+        name: project.name.clone(),
+        cwd: project.cwd.to_path_buf(),
+        project_id: project.project_id.map(str::to_string),
     };
 
     button(label)
         .width(Length::Fill)
-        .padding([8, 10])
-        .style(style)
+        .padding([7, 8])
+        .style(style::row_button(is_selected))
+        .on_press(Message::NewChatIn(target))
+        .into()
+}
+
+fn thread_row(thread: &Thread, is_active: bool) -> Element<'_, Message> {
+    let title = text(truncate(&thread_title(thread)))
+        .size(14)
+        .wrapping(Wrapping::None)
+        .width(Length::Fill);
+
+    let mut label = row![title].spacing(8).align_y(Alignment::Center);
+    if matches!(thread.status, ThreadStatus::Active { .. }) {
+        label = label.push(running_dot());
+    }
+
+    button(label)
+        .width(Length::Fill)
+        .padding([7, 8])
+        .clip(true)
+        .style(style::row_button(is_active))
         .on_press(Message::OpenThread(thread.id.clone()))
         .into()
 }
 
-fn folder_name(thread: &Thread) -> String {
-    thread
-        .cwd
-        .as_path()
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| thread.cwd.as_path().display().to_string())
+fn running_dot<'a>() -> Element<'a, Message> {
+    container(space())
+        .width(RUNNING_DOT_SIZE)
+        .height(RUNNING_DOT_SIZE)
+        .style(style::running_dot)
+        .into()
 }
 
-fn relative_time(elapsed_seconds: i64) -> String {
-    match elapsed_seconds.max(0) {
-        seconds if seconds < MINUTE => "just now".to_string(),
-        seconds if seconds < HOUR => format!("{}m ago", seconds / MINUTE),
-        seconds if seconds < DAY => format!("{}h ago", seconds / HOUR),
-        seconds => format!("{}d ago", seconds / DAY),
+fn project_groups<'a>(projects: &'a [Project], threads: &[&'a Thread]) -> Vec<ProjectGroup<'a>> {
+    let mut groups: Vec<ProjectGroup<'a>> = projects.iter().filter_map(saved_project).collect();
+
+    for &thread in threads {
+        match groups.iter_mut().find(|group| group.contains(thread)) {
+            Some(group) if group.threads.len() < THREADS_PER_PROJECT => group.threads.push(thread),
+            Some(_) => {}
+            None => groups.push(folder_project(thread)),
+        }
+    }
+
+    groups
+}
+
+fn saved_project(project: &Project) -> Option<ProjectGroup<'_>> {
+    let root = project.roots.first()?;
+
+    Some(ProjectGroup {
+        name: project.name.clone(),
+        cwd: root.path.as_path(),
+        project_id: Some(project.id.as_str()),
+        threads: Vec::new(),
+    })
+}
+
+fn folder_project(thread: &Thread) -> ProjectGroup<'_> {
+    let cwd = thread.cwd.as_path();
+
+    ProjectGroup {
+        name: folder_name(cwd),
+        cwd,
+        project_id: None,
+        threads: vec![thread],
     }
 }
 
-fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs() as i64)
-        .unwrap_or_default()
+impl ProjectGroup<'_> {
+    fn contains(&self, thread: &Thread) -> bool {
+        let same_project = self
+            .project_id
+            .is_some_and(|id| thread.project_id.as_deref() == Some(id));
+
+        same_project || thread.cwd.as_path().starts_with(self.cwd)
+    }
+}
+
+fn folder_name(cwd: &Path) -> String {
+    cwd.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| cwd.display().to_string())
+}
+
+fn truncate(title: &str) -> String {
+    if title.chars().count() <= TITLE_CHARACTERS {
+        return title.to_string();
+    }
+
+    let shortened: String = title.chars().take(TITLE_CHARACTERS - 1).collect();
+    format!("{}…", shortened.trim_end())
 }

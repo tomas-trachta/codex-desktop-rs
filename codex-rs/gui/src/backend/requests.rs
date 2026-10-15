@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
@@ -5,9 +6,19 @@ use std::sync::atomic::Ordering;
 
 use codex_app_server_client::InProcessAppServerRequestHandle;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::ModelListParams;
+use codex_app_server_protocol::ModelListResponse;
+use codex_app_server_protocol::ProjectCreateParams;
+use codex_app_server_protocol::ProjectCreateResponse;
+use codex_app_server_protocol::ProjectListParams;
+use codex_app_server_protocol::ProjectListResponse;
+use codex_app_server_protocol::ProjectRoot;
+use codex_app_server_protocol::ProjectSortKey;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::Thread;
+use codex_app_server_protocol::ThreadArchiveParams;
+use codex_app_server_protocol::ThreadArchiveResponse;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadReadParams;
@@ -15,6 +26,8 @@ use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadResumeInitialTurnsPageParams;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
+use codex_app_server_protocol::ThreadSetNameParams;
+use codex_app_server_protocol::ThreadSetNameResponse;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadStartParams;
@@ -28,12 +41,16 @@ use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::de::DeserializeOwned;
+use uuid::Uuid;
 
 use super::Access;
 use super::Event;
 use super::OpenedThread;
 use super::Request;
+use super::ThreadSettings;
+use super::TurnOverrides;
 
 const THREAD_PAGE_SIZE: u32 = 100;
 const INITIAL_TURNS_PAGE_SIZE: u32 = 50;
@@ -58,19 +75,27 @@ impl Requests {
     pub async fn execute(self, request: Request) -> Result<Option<Event>, String> {
         match request {
             Request::ListThreads => self.list_threads().await.map(Some),
-            Request::NewThread => self.start_thread().await.map(Some),
+            Request::ListModels => self.list_models().await.map(Some),
+            Request::ListProjects => self.list_projects().await.map(Some),
+            Request::CreateProject { path } => self.create_project(path).await.map(Some),
+            Request::NewThread { cwd, project_id } => {
+                self.start_thread(cwd, project_id).await.map(Some)
+            }
             Request::OpenThread { thread_id } => self.open_thread(thread_id).await.map(Some),
             Request::SendMessage {
                 thread_id,
                 text,
                 client_message_id,
+                overrides,
             } => self
-                .start_turn(thread_id, text, client_message_id)
+                .start_turn(thread_id, text, client_message_id, overrides)
                 .await
                 .map(Some),
             Request::Interrupt { thread_id, turn_id } => {
                 self.interrupt(thread_id, turn_id).await.map(|()| None)
             }
+            Request::Archive { thread_id } => self.archive(thread_id).await.map(Some),
+            Request::Rename { thread_id, name } => self.rename(thread_id, name).await.map(Some),
         }
     }
 
@@ -99,16 +124,77 @@ impl Requests {
         Ok(Event::ThreadsListed(response.data))
     }
 
-    async fn start_thread(&self) -> Result<Event, String> {
+    async fn list_models(&self) -> Result<Event, String> {
+        let params = ModelListParams {
+            cursor: None,
+            limit: None,
+            include_hidden: Some(false),
+        };
+
+        let response: ModelListResponse = self
+            .send(|request_id| ClientRequest::ModelList { request_id, params })
+            .await?;
+        Ok(Event::ModelsListed(response.data))
+    }
+
+    async fn list_projects(&self) -> Result<Event, String> {
+        let params = ProjectListParams {
+            cursor: None,
+            limit: None,
+            sort_key: Some(ProjectSortKey::RecencyAt),
+            sort_direction: None,
+        };
+
+        let response: ProjectListResponse = self
+            .send(|request_id| ClientRequest::ProjectList { request_id, params })
+            .await?;
+        Ok(Event::ProjectsListed(response.data))
+    }
+
+    async fn create_project(&self, path: PathBuf) -> Result<Event, String> {
+        let root = AbsolutePathBuf::from_absolute_path(&path).map_err(|err| err.to_string())?;
+        let params = ProjectCreateParams {
+            name: folder_name(&path),
+            roots: vec![ProjectRoot { path: root }],
+            metadata: None,
+            idempotency_key: Uuid::new_v4().to_string(),
+        };
+
+        let response: ProjectCreateResponse = self
+            .send(|request_id| ClientRequest::ProjectCreate { request_id, params })
+            .await?;
+        Ok(Event::ProjectCreated(Box::new(response.project)))
+    }
+
+    async fn start_thread(
+        &self,
+        cwd: Option<PathBuf>,
+        project_id: Option<String>,
+    ) -> Result<Event, String> {
+        let cwd = cwd.unwrap_or_else(|| self.cwd.clone());
         let params = ThreadStartParams {
-            cwd: Some(self.cwd.to_string_lossy().into_owned()),
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+            project_id,
             ..ThreadStartParams::default()
         };
 
         let response: ThreadStartResponse = self
             .send(|request_id| ClientRequest::ThreadStart { request_id, params })
             .await?;
-        Ok(opened(response.thread, Vec::new(), Access::Writable))
+        let settings = ThreadSettings {
+            model: Some(response.model),
+            reasoning_effort: response.reasoning_effort,
+            approval_policy: Some(response.approval_policy),
+            approvals_reviewer: Some(response.approvals_reviewer),
+            permission_profile: response.active_permission_profile.map(|profile| profile.id),
+        };
+
+        Ok(opened(
+            response.thread,
+            Vec::new(),
+            Access::Writable,
+            settings,
+        ))
     }
 
     async fn open_thread(&self, thread_id: String) -> Result<Event, String> {
@@ -124,7 +210,13 @@ impl Requests {
         let turns = self.recent_turns(&thread_id).await?;
         let thread = self.read_thread(thread_id).await?;
 
-        Ok(opened(thread, turns, Access::ReadOnly))
+        let settings = ThreadSettings {
+            model: thread.model.clone(),
+            reasoning_effort: thread.reasoning_effort.clone(),
+            ..ThreadSettings::default()
+        };
+
+        Ok(opened(thread, turns, Access::ReadOnly, settings))
     }
 
     async fn read_thread(&self, thread_id: String) -> Result<Thread, String> {
@@ -188,9 +280,14 @@ impl Requests {
         thread_id: String,
         text: String,
         client_message_id: String,
+        overrides: TurnOverrides,
     ) -> Result<Event, String> {
         let params = TurnStartParams {
             thread_id: thread_id.clone(),
+            model: overrides.model,
+            effort: overrides.effort,
+            approval_policy: overrides.approval_policy,
+            permissions: overrides.permissions,
             client_user_message_id: Some(client_message_id),
             input: vec![UserInput::Text {
                 text,
@@ -215,6 +312,29 @@ impl Requests {
             .send(|request_id| ClientRequest::TurnInterrupt { request_id, params })
             .await?;
         Ok(())
+    }
+
+    async fn archive(&self, thread_id: String) -> Result<Event, String> {
+        let params = ThreadArchiveParams {
+            thread_id: thread_id.clone(),
+        };
+
+        let _: ThreadArchiveResponse = self
+            .send(|request_id| ClientRequest::ThreadArchive { request_id, params })
+            .await?;
+        Ok(Event::ThreadArchived { thread_id })
+    }
+
+    async fn rename(&self, thread_id: String, name: String) -> Result<Event, String> {
+        let params = ThreadSetNameParams {
+            thread_id: thread_id.clone(),
+            name: name.clone(),
+        };
+
+        let _: ThreadSetNameResponse = self
+            .send(|request_id| ClientRequest::ThreadSetName { request_id, params })
+            .await?;
+        Ok(Event::ThreadRenamed { thread_id, name })
     }
 
     async fn send<T>(&self, build: impl FnOnce(RequestId) -> ClientRequest) -> Result<T, String>
@@ -248,13 +368,28 @@ fn opened_from_resume(response: ThreadResumeResponse) -> Event {
         None => response.thread.turns.clone(),
     };
 
-    opened(response.thread, turns, Access::Writable)
+    let settings = ThreadSettings {
+        model: Some(response.model),
+        reasoning_effort: response.reasoning_effort,
+        approval_policy: Some(response.approval_policy),
+        approvals_reviewer: Some(response.approvals_reviewer),
+        permission_profile: response.active_permission_profile.map(|profile| profile.id),
+    };
+
+    opened(response.thread, turns, Access::Writable, settings)
 }
 
-fn opened(thread: Thread, turns: Vec<Turn>, access: Access) -> Event {
+fn opened(thread: Thread, turns: Vec<Turn>, access: Access, settings: ThreadSettings) -> Event {
     Event::ThreadOpened(Box::new(OpenedThread {
         thread,
         turns,
         access,
+        settings,
     }))
+}
+
+fn folder_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }
