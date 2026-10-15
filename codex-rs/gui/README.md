@@ -33,7 +33,9 @@ rebuild in seconds.
 | bin    | `shortcuts`               | keyboard shortcuts, matched by physical key for digits             |
 | bin    | `transcript`              | folds thread history and streamed notifications into display rows |
 | bin    | `view`                    | sidebar, header, transcript, composer and approval card            |
+| bin    | `approval_modes`          | approval-mode presets shared with the TUI                          |
 | bin    | `view::markdown`          | Markdown rendering with light code blocks and inline code chips   |
+| bin    | `view::flat_markdown`     | flattens a reply into one selectable text block                    |
 | bin    | `view::command_display`   | turns shell-wrapped commands into readable step labels             |
 
 ## Keyboard shortcuts
@@ -41,9 +43,11 @@ rebuild in seconds.
 | Shortcut              | Action                            |
 | --------------------- | --------------------------------- |
 | Ctrl+N                | New chat                          |
+| Ctrl+O                | Add project                       |
 | Ctrl+B                | Toggle sidebar                    |
 | Ctrl+1 … Ctrl+9       | Open recent chat                  |
 | Ctrl+Tab / +Shift     | Next / previous chat              |
+| Ctrl+Shift+M          | Model picker                      |
 | Ctrl+Alt+R            | Rename chat                       |
 | Ctrl+Shift+A          | Archive chat                      |
 | Enter / Esc           | Approve / decline a pending request |
@@ -55,12 +59,13 @@ Supported: projects and recents in the sidebar with search, opening and
 resuming threads (read-only when another Codex window owns them), new chats,
 renaming and archiving, streamed agent messages rendered as Markdown,
 collapsible work steps with command output and coloured diffs, "Worked for"
-turn summaries, interrupting a turn, and command/file-change approvals.
+turn summaries, interrupting a turn, command/file-change approvals, model,
+reasoning-effort and approval-mode pickers, adding projects, and selectable
+transcript text.
 
 Not yet supported, and rejected or ignored for now: `request_user_input`
 prompts, MCP elicitations, permission requests, dynamic tools, image
-attachments, model/approval-mode pickers, the review pane, older-history
-paging, login UI and settings.
+attachments, the review pane, older-history paging, login UI and settings.
 
 The release build needs `codex-command-runner.exe`,
 `codex-windows-sandbox-setup.exe` and `codex-code-mode-host.exe` next to

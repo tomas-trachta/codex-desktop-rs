@@ -1,81 +1,98 @@
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+# Codex GUI
 
----
+A native desktop client for [OpenAI Codex](https://github.com/openai/codex),
+written in Rust with [Iced](https://iced.rs). It looks and works like the
+Codex desktop app, but uses roughly 150 MB of memory instead of the gigabytes
+an Electron app can take.
 
-## Quickstart
+The GUI embeds the Codex app-server in-process through
+`codex-app-server-client`, the same way the official TUI does. There is no
+Electron, no webview and no separate server process. Threads, projects,
+configuration and login are shared with the official Codex apps through
+`~/.codex`.
 
-### Installing and running Codex CLI
+This repository is a fork of `openai/codex`, based on the `rust-v0.162.0`
+release. The GUI lives in [`codex-rs/gui`](codex-rs/gui).
 
-Run the following on Mac or Linux to install Codex CLI:
+## Features
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
-```
+- Projects and recent chats in the sidebar, with search. Projects are shared
+  with the Codex desktop app, and new ones can be added from a folder picker.
+- Streaming replies rendered as Markdown, with selectable and copyable text.
+- Codex's work shown as compact steps ("Ran git status", "Edited 2 files
+  +12 −3") that expand to the full command output or a coloured diff.
+- Model, reasoning-effort and approval-mode pickers in the composer.
+- Inline approval cards for commands and file changes.
+- Rename, archive and read-only viewing of chats that are open in another
+  Codex window.
+- The desktop app's keyboard shortcuts.
 
-Run the following on Windows to install Codex CLI:
+## Requirements
 
-```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
-```
+- Windows 10 or later (Linux and macOS may build, but are untested).
+- The Rust toolchain from [`codex-rs/rust-toolchain.toml`](codex-rs/rust-toolchain.toml).
+- A Codex login: run `codex login`, or sign in once through the official app.
+- About 40 GB of free disk space for the first build.
 
-The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
+## Building
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
-```
+From `codex-rs`, build with link-time optimization off and incremental
+compilation on. The first build takes 30 minutes or more; after that,
+GUI-only changes rebuild in under a minute.
 
 ```powershell
-$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
+$env:CARGO_PROFILE_RELEASE_LTO = "false"
+$env:CARGO_PROFILE_RELEASE_INCREMENTAL = "true"
+cargo build --release -p codex-gui
+cargo build --release -p codex-windows-sandbox --bin codex-command-runner --bin codex-windows-sandbox-setup
 ```
 
-Codex CLI can also be installed via the following package managers:
+On Windows, Codex also needs `codex-code-mode-host.exe` next to
+`codex-gui.exe`. Building it requires a custom V8 build, so copy it from a
+Codex desktop install instead:
 
-```shell
-# Install using npm
-npm install -g @openai/codex
+```powershell
+Copy-Item "$env:LOCALAPPDATA\OpenAI\Codex\bin\*\codex-code-mode-host.exe" target\release\
 ```
 
-```shell
-# Install using Homebrew
-brew install --cask codex
+## Running
+
+```powershell
+target\release\codex-gui.exe [PROJECT_DIR]
 ```
 
-Then simply run `codex` to get started.
+`PROJECT_DIR` defaults to the current directory.
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+## Keeping in sync with the desktop app
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+The OpenAI backend gates models and request fields by client version. Keep
+this fork on the same `rust-vX.Y.Z` release that your Codex desktop app
+bundles; you can find that version by running `codex.exe --version` from the
+app's `bin` folder. When the desktop app updates, rebase onto the matching
+upstream tag.
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+## Keyboard shortcuts
 
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+| Shortcut           | Action                              |
+| ------------------ | ----------------------------------- |
+| Ctrl+N             | New chat                            |
+| Ctrl+O             | Add project                         |
+| Ctrl+B             | Toggle sidebar                      |
+| Ctrl+1 … Ctrl+9    | Open a recent chat                  |
+| Ctrl+Tab / +Shift  | Next / previous chat                |
+| Ctrl+Shift+M       | Model picker                        |
+| Ctrl+Alt+R         | Rename chat                         |
+| Ctrl+Shift+A       | Archive chat                        |
+| Enter / Esc        | Approve / decline a pending request |
+| ↑ (empty composer) | Restore the previous prompt         |
 
-</details>
+## Limitations
 
-### Using Codex with your ChatGPT plan
+- Selection works within one message at a time.
+- MCP elicitations, `request_user_input` prompts, image attachments, the review
+  pane, older-history paging, login and settings screens are not implemented
+  yet.
 
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+## License
 
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
-
-## Docs
-
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
-
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+Apache-2.0, like upstream Codex. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
